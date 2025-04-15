@@ -4,7 +4,7 @@ import base64
 import subprocess
 from openai import OpenAI
 
-def process_property_video(video_path, seconds_per_frame=2):
+def process_property_video(video_path, seconds_per_frame=1.5):
     """
     音声なしの物件動画を処理し、フレーム抽出を行う
 
@@ -123,7 +123,7 @@ def generate_voiceover(text, output_path, api_key=None, voice="alloy"):
     response = client.audio.speech.create(
         model="gpt-4o-mini-tts",
         voice=voice,
-        instructions="SNSで物件について紹介します。明るく話して。",
+        instructions="SNSで物件について紹介します。明るくゆっくり話して。",
         input=text,
     )
 
@@ -191,7 +191,7 @@ def check_ffmpeg_installed():
     except:
         return False
 
-def create_property_video(video_path, seconds_per_frame=2, api_key=None, voice="alloy", output_path=None):
+def create_property_video(video_path, seconds_per_frame=1.5, api_key=None, voice="alloy", output_path=None):
     """
     物件動画から紹介文を生成し、ナレーション付き動画を作成する
 
@@ -251,9 +251,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='物件動画からナレーション付き動画を生成')
     parser.add_argument('video_path', help='処理する動画ファイルのパス')
-    parser.add_argument('--interval', type=int, default=2, help='フレーム抽出間隔（秒）')
+    parser.add_argument('--interval', type=int, default=1.5, help='フレーム抽出間隔（秒）')
     parser.add_argument('--api-key', help='OpenAI APIキー')
-    parser.add_argument('--voice', default='alloy', choices=['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'], 
+    parser.add_argument('--voice', default='alloy', choices=['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
                         help='ナレーションの音声タイプ')
     parser.add_argument('--output', help='出力する動画ファイルのパス')
 
