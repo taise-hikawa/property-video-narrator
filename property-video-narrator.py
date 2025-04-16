@@ -42,6 +42,36 @@ PROPERTY_NARRATION_SCHEMA = {
     }
 }
 
+PROPERTY_FEATURES_SCHEMA = {
+    "name": "property_room_features",
+    "description": "物件の部屋の特徴構造",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "segments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "start_time": {"type": "number"},
+                        "end_time": {"type": "number"},
+                        "features": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "このセグメントで見える特徴のリスト"
+                        }
+                    },
+                    "required": ["start_time", "end_time", "features"],
+                    "additionalProperties": False
+                }
+            }
+        },
+        "required": ["segments"],
+        "additionalProperties": False
+    }
+}
+
 def process_property_video(video_path, seconds_per_frame=1.5):
     """
     音声なしの物件動画を処理し、フレーム抽出を行う
@@ -83,7 +113,18 @@ def process_property_video(video_path, seconds_per_frame=1.5):
 
     return base64Frames, timestamps, video_duration
 
-def generate_timestamped_narration(base64Frames, timestamps, video_duration, api_key=None):
+def add_length_limits_to_features(features):
+    for segment in features['segments']:
+        # セグメントの長さを計算（秒）
+        segment_duration = segment['end_time'] - segment['start_time']
+        # 1秒あたり5文字で最大文字数を計算
+        max_chars = int(segment_duration * 5)
+        # 文字数制限情報を追加
+        segment['max_chars'] = max_chars
+
+    return features
+
+def generate_timestamped_narration(base64Frames, timestamps, video_duration, seconds_per_frame, api_key=None):
     """
     物件動画のフレームと動画の長さからタイムスタンプ付きの物件紹介ナレーションを生成する
 
@@ -91,6 +132,7 @@ def generate_timestamped_narration(base64Frames, timestamps, video_duration, api
         base64Frames: base64エンコードされたフレームのリスト
         timestamps: 各フレームの時間（秒）
         video_duration: 動画の長さ（秒）
+        seconds_per_frame: フレーム抽出間隔（秒）
         api_key: OpenAI APIキー（任意）
 
     Returns:
@@ -98,50 +140,106 @@ def generate_timestamped_narration(base64Frames, timestamps, video_duration, api
     """
     client = OpenAI(api_key=api_key)
 
-    response = client.chat.completions.create(
+    # Step 1: 各セグメントの特徴を抽出
+    features_response = client.chat.completions.create(
         model="gpt-4o",
-        response_format={
-            "type": "json_schema",
-            "json_schema": PROPERTY_NARRATION_SCHEMA
-        },
+        response_format={"type": "json_schema", "json_schema": PROPERTY_FEATURES_SCHEMA},
         messages=[
             {
                 "role": "system",
-                "content": f"""あなたは不動産専門家です。提供された物件動画のフレームに基づいて、
-物件の紹介ナレーションをタイムスタンプ付きで作成してください。
+                "content": f"""不動産専門家として、各シーンで見える特徴を箇条書きで列挙してください。
+各特徴は簡潔な名詞句で記述してください。
 
-【重要】この出力は{video_duration:.1f}秒の動画に合わせたナレーション用のスクリプトです。
-動画のシーン展開（各フレームのタイムスタンプ）を考慮して、適切なタイミングでナレーションが入るように
-設計してください。
+【最重要】同じ部屋や同じシーンは必ず1つのセグメントにまとめてください。例えば：
+- 外観の映像が複数枚続く場合 → 1つの「外観」セグメント
+- 玄関の映像が複数枚続く場合 → 1つの「玄関」セグメント
 
-画像から判断できる情報のみを含め、確実に分からない情報については言及しないでください。
-例えば、間取りや価格が画像から明確でない場合は推測せず、省略してください。
+動画内の主要なシーンを特定し、それぞれを独立したセグメントとして扱ってください。
+少なくとも以下のようなシーンを区別してください：
+- 建物外観
+- 玄関・エントランス
+- リビング・ダイニング
+- キッチン
+- 寝室
+- バスルーム・トイレ
+- バルコニー・外部視点
 
-各セグメントは、前のセグメントの終了時間から始まり、セグメント同士が重ならないようにしてください。
-最後のセグメントは動画の終了時間（{video_duration:.1f}秒）までにすべて収まるようにしてください。
+各フレームは以下のタイムスタンプで撮影されています：
+{', '.join([f'{t:.1f}秒' for t in timestamps])}
+
+セ【セグメント時間の正確な指定方法】
+- 各フレームの抽出時間：フレーム0が0.0秒、フレーム1が{seconds_per_frame}秒、フレーム2が{2*seconds_per_frame}秒...
+- セグメントの開始時間：そのシーンの最初のフレームの時間
+- セグメントの終了時間：そのシーンの最後のフレームの時間（次のフレームはもう別のシーン）
+
+例（{seconds_per_frame}秒間隔でフレームを抽出した場合）：
+- フレーム0-3がキッチン、フレーム4から寝室 → [0.0秒-3.0秒]がキッチンセグメント
+- フレーム4-7が寝室、フレーム8からバスルーム → [4.0秒-7.0秒]が寝室セグメント
 """
             },
             {
                 "role": "user",
                 "content": [
-                    f"これは物件動画から抽出された{len(base64Frames)}枚のフレームです。これらの画像を時系列に沿って分析し、タイムスタンプ付きのナレーションスクリプトを作成してください。各フレームのタイムスタンプは以下の通りです: {', '.join([f'{t:.1f}秒' for t in timestamps])}。",
-                    *map(
-                        lambda x: {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpg;base64,{x}",
-                                "detail": "low",
-                            },
-                        },
-                        base64Frames,
-                    ),
-                ],
-            },
+                    f"これは物件動画から{seconds_per_frame}秒ごとに抽出された{len(base64Frames)}枚のフレームです。各フレームの特徴を時系列に沿って分析してください。",
+                    *[{
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpg;base64,{frame}",
+                            "detail": "high"
+                        }
+                    } for frame in base64Frames]
+                ]
+            }
         ],
-        temperature=0.5,
+        temperature=0.5
     )
 
-    return json.loads(response.choices[0].message.content)
+    print("\n特徴:")
+    features = json.loads(features_response.choices[0].message.content)
+    for i, segment in enumerate(features['segments']):
+        print(f"\nセグメント {i+1} [{segment['start_time']:.1f}秒-{segment['end_time']:.1f}秒]:")
+        for feature in segment['features']:
+            print(f"  - {feature}")
+    print("\n")
+    features_with_limits = add_length_limits_to_features(features)
+    # Step 2: 特徴からナレーションを生成
+    narration_response = client.chat.completions.create(
+        model="gpt-4.1",
+        response_format={"type": "json_schema", "json_schema": PROPERTY_NARRATION_SCHEMA},
+        messages=[
+            {
+                "role": "system",
+                "content": f"""
+あなたはSNSで不動産を紹介するインフルエンサーです。提供された特徴リストから簡潔なナレーションを作成してください。
+
+【最重要】文字数制限を厳守してください：
+- 1秒あたり最大5文字まで。カウントする際は読み仮名でカウントして。
+- 各セグメントの文字数上限 = セグメントの秒数 × 5
+
+例：
+- 6秒セグメント → 最大30文字
+- 9秒セグメント → 最大45文字
+
+必ず文字数をカウントし、制限を超えないようにしてください。内容よりも文字数制限を優先してください。
+
+セグメント間の繋がりを意識し、一つの流れのある紹介になるよう心がけてください。
+「さて」「こちらが」「そして」「続いて」などの接続表現を使いながら、
+家の中を案内しているような自然な流れを作ってください。
+
+親しみやすいSNS風の簡潔な話し言葉を使用してください。
+各セグメントを作成する前に、必ず最大文字数を計算し、その範囲に収めてください。
+最初のセグメントは「を紹介します」という文言が入ると良い。
+                """
+            },
+            {
+                "role": "user",
+                "content": f"以下の特徴リストから物件紹介のナレーションを作成してください。各セグメントの「max_chars」に示された文字数以内に必ず収めてください:\n{json.dumps(features_with_limits, ensure_ascii=False, indent=2)}"
+            }
+        ],
+        temperature=0.8
+    )
+
+    return json.loads(narration_response.choices[0].message.content)
 
 def generate_segment_voiceover(text, output_path, api_key=None, voice="alloy"):
     """
@@ -210,7 +308,6 @@ def combine_video_with_segmented_audio(video_path, narration, temp_dir, output_p
         })
     
     # FFmpegコマンドを構築
-    # 最初に無音ファイルをベースにして、各セグメントを適切な時間に挿入
     filter_complex = ""
     input_count = 1  # 最初の入力は無音ファイル
     
@@ -219,20 +316,19 @@ def combine_video_with_segmented_audio(video_path, narration, temp_dir, output_p
     for i, segment in enumerate(segment_audios):
         inputs.extend(['-i', segment['path']])
         # adelayフィルターを使用して、セグメントを適切な時間に配置
-        # adelayは音声を特定の時間（ミリ秒）遅らせる
         filter_complex += f"[{input_count}]adelay={int(segment['start']*1000)}|{int(segment['start']*1000)}[a{i}];"
         input_count += 1
     
-    # すべてのセグメントを無音ファイルとミックス
-    # 最初に無音ファイルのラベルを設定
-    filter_complex += "[0]"
-    
-    # 各セグメントのラベルを追加
-    for i in range(len(segment_audios)):
-        filter_complex += f"[a{i}]"
-    
-    # amixフィルターで全てをミックス（最初の無音ファイル + 全セグメント）
-    filter_complex += f"amix=inputs={input_count}:duration=longest[aout]"
+    # すべてのストリームをミックス
+    if len(segment_audios) > 0:
+        # 無音ファイルと全セグメントのミックス
+        filter_complex += "[0]"  # 無音ファイル
+        for i in range(len(segment_audios)):
+            filter_complex += f"[a{i}]"  # 各セグメント
+        filter_complex += f"amix=inputs={input_count}:duration=longest[aout]"
+    else:
+        # セグメントがない場合は無音ファイルをそのまま使用
+        filter_complex += "[0]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[aout]"
     
     # 最終的なFFmpegコマンド
     command = [
@@ -315,7 +411,13 @@ def create_property_video_with_segments(video_path, seconds_per_frame=1.5, api_k
     print(f"動画の長さ: {video_duration:.1f}秒")
 
     # タイムスタンプ付き物件紹介ナレーションを生成
-    narration = generate_timestamped_narration(base64Frames, timestamps, video_duration, api_key)
+    narration = generate_timestamped_narration(
+        base64Frames,
+        timestamps,
+        video_duration,
+        seconds_per_frame,  # この引数を追加
+        api_key
+    )
     print("タイムスタンプ付き物件紹介ナレーションの生成が完了しました")
 
     # ナレーションをJSON形式でファイルに保存
