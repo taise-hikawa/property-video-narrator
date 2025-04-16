@@ -118,7 +118,7 @@ def add_length_limits_to_features(features):
         # セグメントの長さを計算（秒）
         segment_duration = segment['end_time'] - segment['start_time']
         # 1秒あたり5文字で最大文字数を計算
-        max_chars = int(segment_duration * 5)
+        max_chars = int(segment_duration * 4)
         # 文字数制限情報を追加
         segment['max_chars'] = max_chars
 
@@ -139,7 +139,7 @@ def generate_timestamped_narration(base64Frames, timestamps, video_duration, sec
         PropertyNarrationオブジェクト
     """
     client = OpenAI(api_key=api_key)
-
+    print({', '.join([f'{t:.1f}秒' for t in timestamps])})
     # Step 1: 各セグメントの特徴を抽出
     features_response = client.chat.completions.create(
         model="gpt-4o",
@@ -147,35 +147,41 @@ def generate_timestamped_narration(base64Frames, timestamps, video_duration, sec
         messages=[
             {
                 "role": "system",
-                "content": f"""不動産専門家として、各シーンで見える特徴を箇条書きで列挙してください。
+                "content": f"""
+                不動産専門家として、各シーンで見える特徴を箇条書きで列挙してください。
 各特徴は簡潔な名詞句で記述してください。
 
-【最重要】同じ部屋や同じシーンは必ず1つのセグメントにまとめてください。例えば：
-- 外観の映像が複数枚続く場合 → 1つの「外観」セグメント
-- 玄関の映像が複数枚続く場合 → 1つの「玄関」セグメント
+【最重要】動画の正確なセグメント分割
+- フレーム0が0.0秒、フレーム1が{seconds_per_frame}秒、フレーム2が{2*seconds_per_frame}秒...と認識してください
+- 必ず最初のセグメントは0.0秒から始めてください
+- 最後のセグメントは必ず{video_duration}秒で終わるようにしてください
+- セグメント間にはギャップを作らないでください（前のセグメントの終了時間 = 次のセグメントの開始時間）
 
-動画内の主要なシーンを特定し、それぞれを独立したセグメントとして扱ってください。
-少なくとも以下のようなシーンを区別してください：
-- 建物外観
-- 玄関・エントランス
-- リビング・ダイニング
-- キッチン
-- 寝室
-- バスルーム・トイレ
-- バルコニー・外部視点
+【空間認識ルール】
+- 同じ部屋や同じシーンは必ず1つのセグメントにまとめてください
+- 以下の空間タイプを区別して判断してください：
+  - 建物外観
+  - 玄関・エントランス
+  - リビング・ダイニング
+  - キッチン
+  - 寝室・ベッドルーム
+  - 洗面所・パウダールーム
+  - 浴室・バスルーム
+  - ベランダ・バルコニー
 
-各フレームは以下のタイムスタンプで撮影されています：
-{', '.join([f'{t:.1f}秒' for t in timestamps])}
+【セグメント時間の正確な指定方法】
+1. 最初のセグメントは0.0秒から開始
+2. 空間/シーンが切り替わる場所でセグメントを区切る
+3. 各セグメントの終了時間 = 次のセグメントの開始時間
+4. 最後のセグメントの終了時間 = {video_duration}秒
 
-セ【セグメント時間の正確な指定方法】
-- 各フレームの抽出時間：フレーム0が0.0秒、フレーム1が{seconds_per_frame}秒、フレーム2が{2*seconds_per_frame}秒...
-- セグメントの開始時間：そのシーンの最初のフレームの時間
-- セグメントの終了時間：そのシーンの最後のフレームの時間（次のフレームはもう別のシーン）
+例：
+- フレーム0-3が外観、フレーム4-7が玄関、フレーム8からリビング →
+  [0.0秒-{3*seconds_per_frame:.1f}秒]が外観セグメント
+  [{4*seconds_per_frame:.1f}秒-{7*seconds_per_frame:.1f}秒]が玄関セグメント
+  [{8*seconds_per_frame:.1f}秒-{video_duration:.1f}秒]がリビングセグメント
 
-例（{seconds_per_frame}秒間隔でフレームを抽出した場合）：
-- フレーム0-3がキッチン、フレーム4から寝室 → [0.0秒-3.0秒]がキッチンセグメント
-- フレーム4-7が寝室、フレーム8からバスルーム → [4.0秒-7.0秒]が寝室セグメント
-"""
+フレームの先に映像がある場合も、最後のフレームのシーンは動画の終了時間まで続くと判断してください。"""
             },
             {
                 "role": "user",
@@ -210,24 +216,26 @@ def generate_timestamped_narration(base64Frames, timestamps, video_duration, sec
             {
                 "role": "system",
                 "content": f"""
-あなたはSNSで不動産を紹介するインフルエンサーです。提供された特徴リストから簡潔なナレーションを作成してください。
+あなたはSNSで不動産を紹介するインフルエンサーです。提供された特徴リストから魅力的なナレーションを作成してください。
 
-【最重要】文字数制限を厳守してください：
-- 1秒あたり最大5文字まで。カウントする際は読み仮名でカウントして。
-- 各セグメントの文字数上限 = セグメントの秒数 × 5
+【最重要・厳守】バランスの取れた表現
+- 各セグメントの文字数はmax_chars値を絶対に超えないようにしてください
+- 文字数は読み方（ひらがな）で厳密にカウント
+- 例: 「緑豊かな外観」→「みどりゆたかながいかん」で13文字
 
-例：
-- 6秒セグメント → 最大30文字
-- 9秒セグメント → 最大45文字
+【表現のバランス】
+- 必ず適切に漢字を使用する（全てひらがなにしない）
+- 例: 「ひろびろしたリビング」ではなく「広々としたリビング」
+- 簡潔さを優先しつつ、自然な日本語にする
 
-必ず文字数をカウントし、制限を超えないようにしてください。内容よりも文字数制限を優先してください。
+【付加価値のある表現】
+- 物理的特徴から感覚的・情緒的な価値を簡潔に伝えてください
+  例: 「大きな窓」→「光あふれる窓」
+  例: 「木目調の壁」→「落ち着く木目調」
+- 感覚的表現は短く端的に
 
 セグメント間の繋がりを意識し、一つの流れのある紹介になるよう心がけてください。
-「さて」「こちらが」「そして」「続いて」などの接続表現を使いながら、
-家の中を案内しているような自然な流れを作ってください。
-
 親しみやすいSNS風の簡潔な話し言葉を使用してください。
-各セグメントを作成する前に、必ず最大文字数を計算し、その範囲に収めてください。
 最初のセグメントは「を紹介します」という文言が入ると良い。
                 """
             },
@@ -236,7 +244,7 @@ def generate_timestamped_narration(base64Frames, timestamps, video_duration, sec
                 "content": f"以下の特徴リストから物件紹介のナレーションを作成してください。各セグメントの「max_chars」に示された文字数以内に必ず収めてください:\n{json.dumps(features_with_limits, ensure_ascii=False, indent=2)}"
             }
         ],
-        temperature=0.8
+        temperature=0.4
     )
 
     return json.loads(narration_response.choices[0].message.content)
@@ -263,7 +271,10 @@ def generate_segment_voiceover(text, output_path, api_key=None, voice="alloy"):
         input=text,
     )
 
-    response.stream_to_file(output_path)
+    # Use with_streaming_response instead of stream_to_file
+    with open(output_path, 'wb') as f:
+        for chunk in response.iter_bytes():
+            f.write(chunk)
     return output_path
 
 def combine_video_with_segmented_audio(video_path, narration, temp_dir, output_path, api_key=None, voice="alloy"):
