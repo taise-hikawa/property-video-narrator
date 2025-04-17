@@ -339,6 +339,67 @@ The first segment should include "Let me show you".
 
     return json.loads(narration_response.choices[0].message.content)
 
+def generate_segment_voiceover_niji_voice(text, output_path, api_key=None):
+    """
+    テキストから音声ナレーションを生成する (NijiVoice版)
+
+    Args:
+        text: 読み上げるテキスト
+        output_path: 出力する音声ファイルのパス
+        api_key: NijiVoice APIキー
+        voice: ボイスアクターID (OpenAIのvoice引数と互換性を持たせるため同名のパラメータを使用)
+
+    Returns:
+        生成された音声ファイルのパス
+    """
+    import requests
+
+    if not api_key:
+        raise ValueError("NijiVoice APIキーが必要です")
+
+    # voiceにはボイスアクターIDが入ります（OpenAIの関数と互換性を持たせるため）
+    voice_actor_id = "69f3f0fa-860b-46ff-a7d5-6a950500fb40"
+
+    url = f"https://api.nijivoice.com/api/platform/v1/voice-actors/{voice_actor_id}/generate-voice"
+
+    # デフォルトのフォーマットはwavに設定
+    # 速度は元々のOpenAI TTSのデフォルトに近いと思われる値を設定
+    payload = {
+        "script": text,
+        "speed": "0.9",
+        "format": "mp3"
+    }
+
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "x-api-key": "3a2d3af6-5dd4-4a82-9ab0-5e0298e1ab6c"
+    }
+
+    try:
+        # NijiVoice APIを呼び出す
+        response = requests.post(url, json=payload, headers=headers)
+        response.raise_for_status()  # エラーチェック
+
+        # レスポンスから音声URLを取得
+        audio_url = response.json()["generatedVoice"]["audioFileUrl"]
+
+        # 音声ファイルをダウンロード
+        audio_response = requests.get(audio_url)
+        audio_response.raise_for_status()
+
+        # 音声ファイルを保存
+        with open(output_path, "wb") as f:
+            f.write(audio_response.content)
+    
+        return output_path
+
+    except requests.exceptions.RequestException as e:
+        print(f"NijiVoice API呼び出し中にエラーが発生しました: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"エラーレスポンス: {e.response.text}")
+        return None
+
 def generate_segment_voiceover(text, output_path, api_key=None, voice="alloy"):
     """
     テキストから音声ナレーションを生成する
@@ -367,7 +428,7 @@ def generate_segment_voiceover(text, output_path, api_key=None, voice="alloy"):
             f.write(chunk)
     return output_path
 
-def combine_video_with_segmented_audio(video_path, narration, temp_dir, output_path, api_key=None, voice="alloy", volume_level=2.0):
+def combine_video_with_segmented_audio(video_path, narration, temp_dir, output_path, api_key=None, niji_voice_api_key=None, voice="alloy", volume_level=2.0, lang="ja"):
     """
     動画とセグメント分けされたナレーションを組み合わせる
 
@@ -379,12 +440,13 @@ def combine_video_with_segmented_audio(video_path, narration, temp_dir, output_p
         api_key: OpenAI APIキー（任意）
         voice: 使用する音声タイプ
         volume_level: 音量倍率 (1.0=等倍, 2.0=2倍, etc.)
+        lang: 言語
 
     Returns:
         合成に成功したかどうか（Boolean）
     """
     os.makedirs(temp_dir, exist_ok=True)
-    
+
     # 無音の音声ファイルを作成
     silent_audio = os.path.join(temp_dir, "silent.mp3")
     subprocess.run([
@@ -397,22 +459,25 @@ def combine_video_with_segmented_audio(video_path, narration, temp_dir, output_p
         '-y',
         silent_audio
     ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    
+
     # 各セグメントの音声を生成
     segment_audios = []
     for i, segment in enumerate(narration['segments']):
         segment_audio = os.path.join(temp_dir, f"segment_{i}.mp3")
-        generate_segment_voiceover(segment['text'], segment_audio, api_key, voice)
+        if lang=="ja" and niji_voice_api_key:
+            generate_segment_voiceover_niji_voice(segment['text'], segment_audio, niji_voice_api_key)
+        else:
+            generate_segment_voiceover(segment['text'], segment_audio, api_key, voice)
         segment_audios.append({
             'path': segment_audio,
             'start': segment['start_time'],
             'end': segment['end_time']
         })
-    
+
     # FFmpegコマンドを構築
     filter_complex = ""
     input_count = 1  # 最初の入力は無音ファイル
-    
+
     # 各セグメントの入力を追加
     inputs = ['-i', silent_audio]
     for i, segment in enumerate(segment_audios):
@@ -420,7 +485,7 @@ def combine_video_with_segmented_audio(video_path, narration, temp_dir, output_p
         # adelayフィルターを使用して、セグメントを適切な時間に配置
         filter_complex += f"[{input_count}]adelay={int(segment['start']*1000)}|{int(segment['start']*1000)}[a{i}];"
         input_count += 1
-    
+
     # すべてのストリームをミックス
     if len(segment_audios) > 0:
         # 無音ファイルと全セグメントのミックス
@@ -488,7 +553,7 @@ def check_ffmpeg_installed():
         return False
 
 # Modify create_property_video_with_segments to include language parameter
-def create_property_video_with_segments(video_path, seconds_per_frame=1.5, property_info=None, api_key=None, voice="alloy", output_path=None, language='ja', volume_level=2.0):
+def create_property_video_with_segments(video_path, seconds_per_frame=1.5, property_info=None, api_key=None, niji_voice_api_key=None, voice="alloy", output_path=None, language='ja', volume_level=2.0):
     """
     物件動画からタイムスタンプ付きナレーションを生成し、ナレーション付き動画を作成する
 
@@ -551,7 +616,7 @@ def create_property_video_with_segments(video_path, seconds_per_frame=1.5, prope
 
     print(f"動画とセグメント化されたナレーションを合成しています...")
     success = combine_video_with_segmented_audio(
-        video_path, narration, temp_dir, output_path, api_key, voice, volume_level
+        video_path, narration, temp_dir, output_path, api_key, niji_voice_api_key, voice, volume_level, language
     )
 
     if success:
@@ -570,6 +635,7 @@ if __name__ == "__main__":
     parser.add_argument('--interval', type=float, default=1.5, help='フレーム抽出間隔（秒）')
     parser.add_argument('--property-info', help='物件情報（例：駅から7分、品川、家賃13万）')
     parser.add_argument('--api-key', help='OpenAI APIキー')
+    parser.add_argument('--niji-voice-api-key', help='にじボイスのAPIキー')
     parser.add_argument('--voice', default='alloy', choices=['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
                         help='ナレーションの音声タイプ')
     parser.add_argument('--output', help='出力する動画ファイルのパス')
@@ -584,6 +650,7 @@ if __name__ == "__main__":
         args.interval,
         args.property_info,
         args.api_key,
+        args.niji_voice_api_key,
         args.voice,
         args.output,
         args.language,
