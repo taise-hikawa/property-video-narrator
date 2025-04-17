@@ -367,7 +367,7 @@ def generate_segment_voiceover(text, output_path, api_key=None, voice="alloy"):
             f.write(chunk)
     return output_path
 
-def combine_video_with_segmented_audio(video_path, narration, temp_dir, output_path, api_key=None, voice="alloy"):
+def combine_video_with_segmented_audio(video_path, narration, temp_dir, output_path, api_key=None, voice="alloy", volume_level=2.0):
     """
     動画とセグメント分けされたナレーションを組み合わせる
 
@@ -378,6 +378,7 @@ def combine_video_with_segmented_audio(video_path, narration, temp_dir, output_p
         output_path: 出力する動画ファイルのパス
         api_key: OpenAI APIキー（任意）
         voice: 使用する音声タイプ
+        volume_level: 音量倍率 (1.0=等倍, 2.0=2倍, etc.)
 
     Returns:
         合成に成功したかどうか（Boolean）
@@ -426,10 +427,10 @@ def combine_video_with_segmented_audio(video_path, narration, temp_dir, output_p
         filter_complex += "[0]"  # 無音ファイル
         for i in range(len(segment_audios)):
             filter_complex += f"[a{i}]"  # 各セグメント
-        filter_complex += f"amix=inputs={input_count}:duration=longest[aout]"
+        filter_complex += f"amix=inputs={input_count}:duration=longest:normalize=0,dynaudnorm,volume={volume_level}[aout]"
     else:
         # セグメントがない場合は無音ファイルをそのまま使用
-        filter_complex += "[0]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[aout]"
+        filter_complex += "[0]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,volume={volume_level}[aout]"
 
     # 最終的なFFmpegコマンド
     command = [
@@ -487,7 +488,7 @@ def check_ffmpeg_installed():
         return False
 
 # Modify create_property_video_with_segments to include language parameter
-def create_property_video_with_segments(video_path, seconds_per_frame=1.5, property_info=None, api_key=None, voice="alloy", output_path=None, language='ja'):
+def create_property_video_with_segments(video_path, seconds_per_frame=1.5, property_info=None, api_key=None, voice="alloy", output_path=None, language='ja', volume_level=2.0):
     """
     物件動画からタイムスタンプ付きナレーションを生成し、ナレーション付き動画を作成する
 
@@ -498,6 +499,8 @@ def create_property_video_with_segments(video_path, seconds_per_frame=1.5, prope
         api_key: OpenAI APIキー（任意）
         voice: 使用する音声タイプ
         output_path: 出力する動画ファイルのパス（省略時は自動生成）
+        language: ナレーション言語 ('ja': 日本語, 'en': 英語, 'zh': 中国語)
+        volume_level: 音量倍率 (1.0=等倍, 2.0=2倍, etc.)
 
     Returns:
         物件紹介のナレーションオブジェクトと生成された動画のパス（成功した場合）、またはエラーメッセージ
@@ -518,7 +521,7 @@ def create_property_video_with_segments(video_path, seconds_per_frame=1.5, prope
         base64Frames,
         timestamps,
         video_duration,
-        seconds_per_frame,  # この引数を追加
+        seconds_per_frame,
         property_info,
         api_key,
         language
@@ -548,7 +551,7 @@ def create_property_video_with_segments(video_path, seconds_per_frame=1.5, prope
 
     print(f"動画とセグメント化されたナレーションを合成しています...")
     success = combine_video_with_segmented_audio(
-        video_path, narration, temp_dir, output_path, api_key, voice
+        video_path, narration, temp_dir, output_path, api_key, voice, volume_level
     )
 
     if success:
@@ -558,7 +561,44 @@ def create_property_video_with_segments(video_path, seconds_per_frame=1.5, prope
         return narration, "動画の合成に失敗しました"
 
 # 使用例
+# 使用例
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description='物件動画からタイムスタンプ付きナレーション動画を生成')
+    parser.add_argument('video_path', help='処理する動画ファイルのパス')
+    parser.add_argument('--interval', type=float, default=1.5, help='フレーム抽出間隔（秒）')
+    parser.add_argument('--property-info', help='物件情報（例：駅から7分、品川、家賃13万）')
+    parser.add_argument('--api-key', help='OpenAI APIキー')
+    parser.add_argument('--voice', default='alloy', choices=['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
+                        help='ナレーションの音声タイプ')
+    parser.add_argument('--output', help='出力する動画ファイルのパス')
+    parser.add_argument('--language', default='ja', choices=['ja', 'en', 'zh'],
+                        help='ナレーション言語 (ja: 日本語, en: 英語, zh: 中国語)')
+    parser.add_argument('--volume', type=float, default=2.0, help='音量倍率 (1.0=等倍, 2.0=2倍など)')
+
+    args = parser.parse_args()
+
+    narration, output_video = create_property_video_with_segments(
+        args.video_path,
+        args.interval,
+        args.property_info,
+        args.api_key,
+        args.voice,
+        args.output,
+        args.language,
+        args.volume
+    )
+
+    print("\n--- 物件紹介ナレーション ---\n")
+    print("\nセグメント:")
+    for i, segment in enumerate(narration['segments']):
+        print(f"  [{segment['start_time']:.1f}秒-{segment['end_time']:.1f}秒] {segment['text']}")
+
+    if isinstance(output_video, str) and output_video.startswith("動画の合成に失敗"):
+        print(f"\nエラー: {output_video}")
+    else:
+        print(f"\n最終動画: {output_video}")
     import argparse
 
     parser = argparse.ArgumentParser(description='物件動画からタイムスタンプ付きナレーション動画を生成')
