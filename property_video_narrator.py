@@ -151,7 +151,7 @@ def generate_timestamped_narration(base64Frames, timestamps, video_duration, sec
         PropertyNarrationオブジェクト
     """
     client = OpenAI(api_key=api_key)
-    
+
     # 物件情報があれば、それを含むプロンプトを各言語用に作成
     property_info_prompts = {
         'en': f"""
@@ -475,7 +475,7 @@ def generate_segment_voiceover_niji_voice(text, output_path, api_key=None):
     headers = {
         "accept": "application/json",
         "content-type": "application/json",
-        "x-api-key": "3a2d3af6-5dd4-4a82-9ab0-5e0298e1ab6c"
+        "x-api-key": api_key
     }
 
     try:
