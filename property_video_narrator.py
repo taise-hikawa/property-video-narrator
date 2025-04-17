@@ -232,7 +232,6 @@ Please naturally incorporate the following information into the narration:
         ],
         temperature=0.5
     )
-
     print("\n特徴:")
     features = json.loads(features_response.choices[0].message.content)
     for i, segment in enumerate(features['segments']):
@@ -240,18 +239,114 @@ Please naturally incorporate the following information into the narration:
         for feature in segment['features']:
             print(f"  - {feature}")
     print("\n")
+
+    print("\n特徴:")
+    # 文字数制限を追加
     features_with_limits = add_length_limits_to_features(features, language)
-    # Step 2: 特徴からナレーションを生成
+    
+    # 全セグメント数を追加
+    total_segments = len(features_with_limits['segments'])
+    for i, segment in enumerate(features_with_limits['segments']):
+        segment['segment_index'] = i
+        segment['total_segments'] = total_segments
+    
+    # Step 2: セグメントごとにナレーションを生成
+    narration = {
+        "segments": []
+    }
+    first_segment = features_with_limits['segments'][0]
+    last_segment = features_with_limits['segments'][-1]
+
+    first_duration = first_segment['end_time'] - first_segment['start_time']
+    last_duration = last_segment['end_time'] - last_segment['start_time']
+
+    # 最初と最後のセグメントのうち、長い方のインデックスを選択
+    longest_segment_index = 0 if first_duration >= last_duration else len(features_with_limits['segments']) - 1
+
+    for i, segment in enumerate(features_with_limits['segments']):
+        print(f"セグメント {i+1}/{total_segments} のナレーションを生成中...")
+
+        # セグメントごとにナレーションを生成
+        narration_text = generate_segment_narration(client, segment, property_info, language, i == longest_segment_index)
+
+        # 生成されたナレーションをセグメントに追加
+        narration['segments'].append({
+            "start_time": segment['start_time'],
+            "end_time": segment['end_time'],
+            "text": narration_text
+        })
+
+        print(f"  セグメント {i+1} ナレーション: {narration_text}")
+        print(f"  文字数: {len(narration_text)}/{segment['max_chars']}")
+
+    return narration
+
+def generate_segment_narration(client, segment, property_info=None, language='ja', include_property_info=False):
+    """
+    セグメントごとにナレーションを生成する
+
+    Args:
+        client: OpenAI APIクライアント
+        segment: ナレーションを生成するセグメント情報
+        property_info: 物件情報（文字列）
+        language: 言語設定（デフォルト: 日本語）
+
+    Returns:
+        生成されたナレーションテキスト
+    """
+    property_instruction = ""
+    if property_info and include_property_info:
+
+        if include_property_info:
+            # このセグメントに物件情報を含める
+            if language == 'ja':
+                property_instruction = f"""
+【重要な物件情報】
+以下の情報をこのセグメントのナレーションに自然な形で含めてください：
+{property_info}
+"""
+            elif language == 'en':
+                property_instruction = f"""
+[IMPORTANT PROPERTY INFORMATION]
+Please include the following information in this segment:
+{property_info}
+"""
+            elif language == 'zh':
+                property_instruction = f"""
+【重要房产信息】
+请在此片段中自然地融入以下信息：
+{property_info}
+"""
+        else:
+            # このセグメントでは物件情報を含めない
+            if language == 'ja':
+                property_instruction = f"""
+【重要な注意点】
+以下の情報は別のセグメントで紹介するので、このセグメントでは含めないでください：
+{property_info}
+"""
+            elif language == 'en':
+                property_instruction = f"""
+[IMPORTANT NOTE]
+The following information will be introduced in another segment. Do not include it in this segment:
+{property_info}
+"""
+            elif language == 'zh':
+                property_instruction = f"""
+【重要提示】
+以下信息将在另一个片段中介绍。请不要在此片段中包含它：
+{property_info}
+"""
     # Language-specific prompts
     language_prompts = {
         'en': f"""
 Please output in English.
-You are a professional real estate influencer. Create engaging narration from the given features.
+You are a professional real estate influencer. Create engaging narration for a single segment of a property video.
 
-{property_info_prompt}
+{property_instruction}
 
 [CRITICAL - MUST FOLLOW]
-- Strictly adhere to the character limit specified by 'max_chars' for each segment
+- Strictly adhere to the character limit specified by 'max_chars' for this segment
 - Count every character, including spaces and punctuation
 - Do not exceed the limit under any circumstances
 - Example: "Spacious living room" = 19 characters
@@ -261,18 +356,15 @@ You are a professional real estate influencer. Create engaging narration from th
 - Focus on emotional value rather than just physical descriptions
 - Example: "Large windows" → "Sun-filled windows"
 - Keep descriptions concise and engaging
-
-Create a flowing narrative that connects all segments naturally.
-The first segment should include "Let me show you".
 """,
         'zh': f"""
 请用中文输出。
-您是一位专业的房地产博主。请根据给定的特征创建吸引人的解说。
+您是一位专业的房地产博主。请根据给定的特征为房产视频的单一片段创建吸引人的解说。
 
-{property_info_prompt}
+{property_instruction}
 
 【最重要 - 必须遵守】
-- 严格遵守每个片段中'max_chars'指定的字数限制
+- 严格遵守'max_chars'指定的字数限制
 - 计算每个字符，包括标点符号
 - 在任何情况下都不能超过限制
 - 示例："宽敞明亮的客厅" = 7个字符
@@ -282,18 +374,15 @@ The first segment should include "Let me show you".
 - 注重情感价值而不是单纯的物理描述
 - 示例："大窗户" → "阳光充沛的窗户"
 - 保持描述简洁有力
-
-创建一个流畅的叙述，自然地连接所有片段。
-第一个片段应包含"让我为您介绍"。
 """,
         'ja': f"""
 日本語でアウトプットしてください。
-あなたはSNSで不動産を紹介するインフルエンサーです。提供された特徴リストから魅力的なナレーションを作成してください。
+あなたはSNSで不動産を紹介するインフルエンサーです。提供された特徴リストから物件紹介動画の1つのセグメントのナレーションを作成してください。
 
-{property_info_prompt}
+{property_instruction}
 
 【最重要・厳守】バランスの取れた表現
-- 各セグメントの文字数はmax_chars値を絶対に超えないようにしてください
+- 文字数はmax_chars値を絶対に超えないようにしてください
 - 文字数は読み方（ひらがな）で厳密にカウント
 - 例: 「緑豊かな外観」→「みどりゆたかながいかん」で13文字
 
@@ -308,36 +397,49 @@ The first segment should include "Let me show you".
   例: 「木目調の壁」→「落ち着く木目調」
 - 感覚的表現は短く端的に
 
-セグメント間の繋がりを意識し、一つの流れのある紹介になるよう心がけてください。
 親しみやすいSNS風の簡潔な話し言葉を使用してください。
-最初のセグメントは「を紹介します」という文言が入ると良い。
 """
     }
 
-    # Language-specific user prompts
-    user_prompts = {
-        'en': "Please create a property introduction narration from the following feature list. Make sure to strictly keep within the character limit specified by 'max_chars' for each segment",
-        'zh': "请根据以下特征列表创建房产介绍解说。请务必严格遵守每个片段中'max_chars'指定的字数限制",
-        'ja': "以下の特徴リストから物件紹介のナレーションを作成してください。各セグメントの「max_chars」に示された文字数以内に必ず収めてください"
-    }
+    # 特定のセグメントのプロンプト調整
+    segment_position_prompt = ""
+    if 'segment_index' in segment and 'total_segments' in segment:
+        if segment['segment_index'] == 0:
+            if language == 'ja':
+                segment_position_prompt = "これは紹介の最初のセグメントです。「紹介します」という表現を含めてください。"
+            elif language == 'en':
+                segment_position_prompt = "This is the first segment of the introduction. Please include 'Let me show you' in your narration."
+            elif language == 'zh':
+                segment_position_prompt = "这是介绍的第一个片段。请在解说中包含让我为您介绍。"
+        elif segment['segment_index'] == segment['total_segments'] - 1:
+            if language == 'ja':
+                segment_position_prompt = "これは紹介の最後のセグメントです。締めくくりの表現を使用してください。"
+            elif language == 'en':
+                segment_position_prompt = "This is the last segment of the introduction. Please use a closing expression."
+            elif language == 'zh':
+                segment_position_prompt = "这是介绍的最后一个片段。请使用结束语。"
 
-    narration_response = client.chat.completions.create(
+    # セグメント固有のプロンプトを追加
+    prompt = language_prompts.get(language, language_prompts['ja']) + "\n" + segment_position_prompt
+
+    # 単一セグメントのナレーション生成
+    response = client.chat.completions.create(
         model="gpt-4.1",
-        response_format={"type": "json_schema", "json_schema": PROPERTY_NARRATION_SCHEMA},  # 共通スキーマを使用
         messages=[
             {
                 "role": "system",
-                "content": language_prompts.get(language, language_prompts['ja'])
+                "content": prompt
             },
             {
                 "role": "user",
-                "content": f"{user_prompts.get(language, user_prompts['ja'])}:\n{json.dumps(features_with_limits, ensure_ascii=False, indent=2)}"
+                "content": f"以下の特徴から、{segment['max_chars']}文字以内のナレーションを作成してください。セグメント時間: {segment['start_time']:.1f}秒から{segment['end_time']:.1f}秒\n特徴リスト: {', '.join(segment['features'])}"
             }
         ],
         temperature=0.4
     )
+    
+    return response.choices[0].message.content.strip()
 
-    return json.loads(narration_response.choices[0].message.content)
 
 def generate_segment_voiceover_niji_voice(text, output_path, api_key=None):
     """
