@@ -599,37 +599,3 @@ if __name__ == "__main__":
         print(f"\nエラー: {output_video}")
     else:
         print(f"\n最終動画: {output_video}")
-    import argparse
-
-    parser = argparse.ArgumentParser(description='物件動画からタイムスタンプ付きナレーション動画を生成')
-    parser.add_argument('video_path', help='処理する動画ファイルのパス')
-    parser.add_argument('--interval', type=float, default=1.5, help='フレーム抽出間隔（秒）')
-    parser.add_argument('--property-info', help='物件情報（例：駅から7分、品川、家賃13万）')
-    parser.add_argument('--api-key', help='OpenAI APIキー')
-    parser.add_argument('--voice', default='alloy', choices=['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
-                        help='ナレーションの音声タイプ')
-    parser.add_argument('--output', help='出力する動画ファイルのパス')
-    parser.add_argument('--language', default='ja', choices=['ja', 'en', 'zh'],
-                        help='Narration language (ja: Japanese, en: English, zh: Chinese)')
-
-    args = parser.parse_args()
-
-    narration, output_video = create_property_video_with_segments(
-        args.video_path,
-        args.interval,
-        args.property_info,
-        args.api_key,
-        args.voice,
-        args.output,
-        args.language
-    )
-
-    print("\n--- 物件紹介ナレーション ---\n")
-    print("\nセグメント:")
-    for i, segment in enumerate(narration['segments']):
-        print(f"  [{segment['start_time']:.1f}秒-{segment['end_time']:.1f}秒] {segment['text']}")
-
-    if isinstance(output_video, str) and output_video.startswith("動画の合成に失敗"):
-        print(f"\nエラー: {output_video}")
-    else:
-        print(f"\n最終動画: {output_video}")
