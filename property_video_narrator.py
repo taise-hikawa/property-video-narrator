@@ -113,18 +113,29 @@ def process_property_video(video_path, seconds_per_frame=1.5):
 
     return base64Frames, timestamps, video_duration
 
-def add_length_limits_to_features(features):
+def add_length_limits_to_features(features, language='ja'):
+    """
+    Add character limits based on language
+    ja: 4 chars/sec (Japanese)
+    en: 8 chars/sec (English)
+    zh: 5 chars/sec (Chinese)
+    """
+    chars_per_second = {
+        'ja': 4,
+        'en': 7,
+        'zh': 3
+    }
+
+    rate = chars_per_second.get(language, 4)
+
     for segment in features['segments']:
-        # セグメントの長さを計算（秒）
         segment_duration = segment['end_time'] - segment['start_time']
-        # 1秒あたり5文字で最大文字数を計算
-        max_chars = int(segment_duration * 4)
-        # 文字数制限情報を追加
+        max_chars = int(segment_duration * rate)
         segment['max_chars'] = max_chars
 
     return features
 
-def generate_timestamped_narration(base64Frames, timestamps, video_duration, seconds_per_frame, property_info=None, api_key=None):
+def generate_timestamped_narration(base64Frames, timestamps, video_duration, seconds_per_frame, property_info=None, api_key=None, language='ja'):
     """
     物件動画のフレームと動画の長さからタイムスタンプ付きの物件紹介ナレーションを生成する
 
@@ -141,14 +152,26 @@ def generate_timestamped_narration(base64Frames, timestamps, video_duration, sec
     """
     client = OpenAI(api_key=api_key)
     
-    # 物件情報があれば、それを含むプロンプトを作成
-    property_info_prompt = ""
-    if property_info:
-        property_info_prompt = f"""
+    # 物件情報があれば、それを含むプロンプトを各言語用に作成
+    property_info_prompts = {
+        'en': f"""
+[IMPORTANT PROPERTY INFORMATION]
+Please naturally incorporate the following information into the narration:
+{property_info}
+""",
+        'zh': f"""
+【重要房产信息】
+请将以下信息自然地融入解说中：
+{property_info}
+""",
+        'ja': f"""
 【重要な物件情報】
 以下の情報を必ずナレーションの中に自然な形で組み込んでください：
 {property_info}
 """
+    }
+
+    property_info_prompt = property_info_prompts.get(language, "") if property_info else ""
 
     # Step 1: 各セグメントの特徴を抽出
     features_response = client.chat.completions.create(
@@ -217,15 +240,54 @@ def generate_timestamped_narration(base64Frames, timestamps, video_duration, sec
         for feature in segment['features']:
             print(f"  - {feature}")
     print("\n")
-    features_with_limits = add_length_limits_to_features(features)
+    features_with_limits = add_length_limits_to_features(features, language)
     # Step 2: 特徴からナレーションを生成
-    narration_response = client.chat.completions.create(
-        model="gpt-4.1",
-        response_format={"type": "json_schema", "json_schema": PROPERTY_NARRATION_SCHEMA},
-        messages=[
-            {
-                "role": "system",
-                "content": f"""
+    # Language-specific prompts
+    language_prompts = {
+        'en': f"""
+Please output in English.
+You are a professional real estate influencer. Create engaging narration from the given features.
+
+{property_info_prompt}
+
+[CRITICAL - MUST FOLLOW]
+- Strictly adhere to the character limit specified by 'max_chars' for each segment
+- Count every character, including spaces and punctuation
+- Do not exceed the limit under any circumstances
+- Example: "Spacious living room" = 19 characters
+
+[Expression Guidelines]
+- Use natural, SNS-friendly language that's brief and impactful
+- Focus on emotional value rather than just physical descriptions
+- Example: "Large windows" → "Sun-filled windows"
+- Keep descriptions concise and engaging
+
+Create a flowing narrative that connects all segments naturally.
+The first segment should include "Let me show you".
+""",
+        'zh': f"""
+请用中文输出。
+您是一位专业的房地产博主。请根据给定的特征创建吸引人的解说。
+
+{property_info_prompt}
+
+【最重要 - 必须遵守】
+- 严格遵守每个片段中'max_chars'指定的字数限制
+- 计算每个字符，包括标点符号
+- 在任何情况下都不能超过限制
+- 示例："宽敞明亮的客厅" = 7个字符
+
+【表达准则】
+- 使用自然、适合社交媒体的语言
+- 注重情感价值而不是单纯的物理描述
+- 示例："大窗户" → "阳光充沛的窗户"
+- 保持描述简洁有力
+
+创建一个流畅的叙述，自然地连接所有片段。
+第一个片段应包含"让我为您介绍"。
+""",
+        'ja': f"""
+日本語でアウトプットしてください。
 あなたはSNSで不動産を紹介するインフルエンサーです。提供された特徴リストから魅力的なナレーションを作成してください。
 
 {property_info_prompt}
@@ -249,11 +311,27 @@ def generate_timestamped_narration(base64Frames, timestamps, video_duration, sec
 セグメント間の繋がりを意識し、一つの流れのある紹介になるよう心がけてください。
 親しみやすいSNS風の簡潔な話し言葉を使用してください。
 最初のセグメントは「を紹介します」という文言が入ると良い。
-                """
+"""
+    }
+
+    # Language-specific user prompts
+    user_prompts = {
+        'en': "Please create a property introduction narration from the following feature list. Make sure to strictly keep within the character limit specified by 'max_chars' for each segment",
+        'zh': "请根据以下特征列表创建房产介绍解说。请务必严格遵守每个片段中'max_chars'指定的字数限制",
+        'ja': "以下の特徴リストから物件紹介のナレーションを作成してください。各セグメントの「max_chars」に示された文字数以内に必ず収めてください"
+    }
+
+    narration_response = client.chat.completions.create(
+        model="gpt-4.1",
+        response_format={"type": "json_schema", "json_schema": PROPERTY_NARRATION_SCHEMA},  # 共通スキーマを使用
+        messages=[
+            {
+                "role": "system",
+                "content": language_prompts.get(language, language_prompts['ja'])
             },
             {
                 "role": "user",
-                "content": f"以下の特徴リストから物件紹介のナレーションを作成してください。各セグメントの「max_chars」に示された文字数以内に必ず収めてください:\n{json.dumps(features_with_limits, ensure_ascii=False, indent=2)}"
+                "content": f"{user_prompts.get(language, user_prompts['ja'])}:\n{json.dumps(features_with_limits, ensure_ascii=False, indent=2)}"
             }
         ],
         temperature=0.4
@@ -352,7 +430,7 @@ def combine_video_with_segmented_audio(video_path, narration, temp_dir, output_p
     else:
         # セグメントがない場合は無音ファイルをそのまま使用
         filter_complex += "[0]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[aout]"
-    
+
     # 最終的なFFmpegコマンド
     command = [
         'ffmpeg',
@@ -367,9 +445,9 @@ def combine_video_with_segmented_audio(video_path, narration, temp_dir, output_p
         '-y',
         output_path
     ]
-    
+
     print(f"実行するFFmpegコマンド: {' '.join(command)}")
-    
+
     # FFmpegを実行
     result = subprocess.run(
         command,
@@ -377,17 +455,17 @@ def combine_video_with_segmented_audio(video_path, narration, temp_dir, output_p
         stderr=subprocess.PIPE,
         text=True
     )
-    
+
     # エラーチェック
     if result.returncode != 0:
         print(f"FFmpeg実行中にエラーが発生しました:\n{result.stderr}")
         return False
-    
+
     # 一時ファイルを削除
     for segment in segment_audios:
         os.remove(segment['path'])
     os.remove(silent_audio)
-    
+
     return True
 
 def check_ffmpeg_installed():
@@ -408,7 +486,8 @@ def check_ffmpeg_installed():
     except:
         return False
 
-def create_property_video_with_segments(video_path, seconds_per_frame=1.5, property_info=None, api_key=None, voice="alloy", output_path=None):
+# Modify create_property_video_with_segments to include language parameter
+def create_property_video_with_segments(video_path, seconds_per_frame=1.5, property_info=None, api_key=None, voice="alloy", output_path=None, language='ja'):
     """
     物件動画からタイムスタンプ付きナレーションを生成し、ナレーション付き動画を作成する
 
@@ -441,7 +520,8 @@ def create_property_video_with_segments(video_path, seconds_per_frame=1.5, prope
         video_duration,
         seconds_per_frame,  # この引数を追加
         property_info,
-        api_key
+        api_key,
+        language
     )
     print("タイムスタンプ付き物件紹介ナレーションの生成が完了しました")
 
@@ -489,6 +569,8 @@ if __name__ == "__main__":
     parser.add_argument('--voice', default='alloy', choices=['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
                         help='ナレーションの音声タイプ')
     parser.add_argument('--output', help='出力する動画ファイルのパス')
+    parser.add_argument('--language', default='ja', choices=['ja', 'en', 'zh'],
+                        help='Narration language (ja: Japanese, en: English, zh: Chinese)')
 
     args = parser.parse_args()
 
@@ -498,7 +580,8 @@ if __name__ == "__main__":
         args.property_info,
         args.api_key,
         args.voice,
-        args.output
+        args.output,
+        args.language
     )
 
     print("\n--- 物件紹介ナレーション ---\n")
