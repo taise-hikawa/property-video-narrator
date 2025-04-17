@@ -124,7 +124,7 @@ def add_length_limits_to_features(features):
 
     return features
 
-def generate_timestamped_narration(base64Frames, timestamps, video_duration, seconds_per_frame, api_key=None):
+def generate_timestamped_narration(base64Frames, timestamps, video_duration, seconds_per_frame, property_info=None, api_key=None):
     """
     物件動画のフレームと動画の長さからタイムスタンプ付きの物件紹介ナレーションを生成する
 
@@ -133,13 +133,23 @@ def generate_timestamped_narration(base64Frames, timestamps, video_duration, sec
         timestamps: 各フレームの時間（秒）
         video_duration: 動画の長さ（秒）
         seconds_per_frame: フレーム抽出間隔（秒）
+        property_info: 物件情報（文字列）
         api_key: OpenAI APIキー（任意）
 
     Returns:
         PropertyNarrationオブジェクト
     """
     client = OpenAI(api_key=api_key)
-    print({', '.join([f'{t:.1f}秒' for t in timestamps])})
+    
+    # 物件情報があれば、それを含むプロンプトを作成
+    property_info_prompt = ""
+    if property_info:
+        property_info_prompt = f"""
+【重要な物件情報】
+以下の情報を必ずナレーションの中に自然な形で組み込んでください：
+{property_info}
+"""
+
     # Step 1: 各セグメントの特徴を抽出
     features_response = client.chat.completions.create(
         model="gpt-4o",
@@ -217,6 +227,8 @@ def generate_timestamped_narration(base64Frames, timestamps, video_duration, sec
                 "role": "system",
                 "content": f"""
 あなたはSNSで不動産を紹介するインフルエンサーです。提供された特徴リストから魅力的なナレーションを作成してください。
+
+{property_info_prompt}
 
 【最重要・厳守】バランスの取れた表現
 - 各セグメントの文字数はmax_chars値を絶対に超えないようにしてください
@@ -396,13 +408,14 @@ def check_ffmpeg_installed():
     except:
         return False
 
-def create_property_video_with_segments(video_path, seconds_per_frame=1.5, api_key=None, voice="alloy", output_path=None):
+def create_property_video_with_segments(video_path, seconds_per_frame=1.5, property_info=None, api_key=None, voice="alloy", output_path=None):
     """
     物件動画からタイムスタンプ付きナレーションを生成し、ナレーション付き動画を作成する
 
     Args:
         video_path: 処理する動画のパス
         seconds_per_frame: フレーム抽出の間隔（秒）
+        property_info: 物件情報（文字列）
         api_key: OpenAI APIキー（任意）
         voice: 使用する音声タイプ
         output_path: 出力する動画ファイルのパス（省略時は自動生成）
@@ -427,6 +440,7 @@ def create_property_video_with_segments(video_path, seconds_per_frame=1.5, api_k
         timestamps,
         video_duration,
         seconds_per_frame,  # この引数を追加
+        property_info,
         api_key
     )
     print("タイムスタンプ付き物件紹介ナレーションの生成が完了しました")
@@ -470,6 +484,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='物件動画からタイムスタンプ付きナレーション動画を生成')
     parser.add_argument('video_path', help='処理する動画ファイルのパス')
     parser.add_argument('--interval', type=float, default=1.5, help='フレーム抽出間隔（秒）')
+    parser.add_argument('--property-info', help='物件情報（例：駅から7分、品川、家賃13万）')
     parser.add_argument('--api-key', help='OpenAI APIキー')
     parser.add_argument('--voice', default='alloy', choices=['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
                         help='ナレーションの音声タイプ')
@@ -480,6 +495,7 @@ if __name__ == "__main__":
     narration, output_video = create_property_video_with_segments(
         args.video_path,
         args.interval,
+        args.property_info,
         args.api_key,
         args.voice,
         args.output
